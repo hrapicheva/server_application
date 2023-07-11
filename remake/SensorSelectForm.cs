@@ -1,4 +1,4 @@
-using Designator_vp_dev.DatabaseContext;
+﻿using Designator_vp_dev.DatabaseContext;
 using System.Data;
 using vp_dev.DatabaseContext;
 using Newtonsoft.Json;
@@ -8,19 +8,22 @@ using Npgsql;
 using static System.Runtime.InteropServices.JavaScript.JSType;
 using System.Xml.Linq;
 using static Microsoft.EntityFrameworkCore.DbLoggerCategory.Database;
+using System.Text;
+using Microsoft.VisualBasic.ApplicationServices;
+using static Server_App_3._3.SensorSelectForm;
 
 namespace Server_App_3._3
 {
     public partial class SensorSelectForm : Form
     {
-        public struct DBShemaJSON
+        public struct DBShemaInsert
         {
+            public List<long> sensor_cid;
+            public List<int> serialList;
             //таблица номеров изделий
             public string sensor;
-
             //Для выбранных teds_data.sensor_oid сбор данных по...
             public string teds_data;
-
             public string type_cal; //...type_cal_oid в соответствии с sensor_oid из таблицы type_cal
             public string teds_template; //teds_template_oid в соответствии с sensor_oid из таблицы teds_template
             public string default_teds_parametrs; //default_teds_parametrs_oid в соответствии с sensor_oid из таблицы default_teds_parametrs
@@ -28,7 +31,7 @@ namespace Server_App_3._3
             public string organization;//manufacturer_oid в соответствии с sensor_oid из таблицы Organization
         }
 
-        private int[,] SerialCidDB; // переменная класса для хранения массива данных
+        DBShemaInsert db_insert;
 
         public SensorSelectForm(string EmployeeFullName)
         {
@@ -76,83 +79,74 @@ namespace Server_App_3._3
         }
 
         //поиск по номерам изделий
-        private void buttonFind_Click(object sender, EventArgs e)
+        private async void buttonFind_Click(object sender, EventArgs e)
         {
 
-            bool IsErrorDBSerial = false;
+            buttonFind.Enabled = false;
+            string fileSensorSerial = "C:\\Users\\aakhrapicheva\\source\\repos\\Server_App_3.3\\FindResult\\find_result.txt";
+            string serials_str = string.Empty;
             string UserMessageSerialFinding = string.Empty;
-            labelFindSerial.Text = "Выполняется поиск по базе...";
             labelError.Text = string.Empty;
-            
+
             try
             {
                 string SerialSelection = textBoxInputSerial.Text;
-                //преобразование данных номеров и интервалов номеров в массив
-                int[] SerialNumbers = ParseIndexSelection(SerialSelection);
-                //проствление флагов наличи в базе
-                int[,] DBSerialFlags = FindSelectionIndex(SerialNumbers);
-                // вывод данных нашлось в базе, не нашлось в базе
-                labelFindSerial.Text = MessageSerialInfo(DBSerialFlags, ref IsErrorDBSerial);
+                //преобразование данных номеров и интервалов номеров в список
+                List<int> serialList = ParseIndexSelection(SerialSelection).ToList();
 
+                //добавление данных в глобальную переменную
+                db_insert.serialList = serialList;
+
+                labelFindSerial.Text = "Выполняется поиск по базе...";
+                Application.DoEvents(); // Обновление интерфейса
+
+                //поиск номеров по базе 
+                using (var dbContext = new VpDevaContext())
+                {
+                    //запрос к serials на совпадение с данными массива
+                    // Выполнение запроса к базе данных в отдельном потоке
+                    var query = await Task.Run(() =>
+                    {
+                        using (var dbContext = new VpDevaContext())
+                        {
+                            //запрос к serials на совпадение с данными массива
+                            return dbContext.Sensors
+                                .Where(sensor => serialList.Contains((int)sensor.Serial))
+                                .Select(sensor => sensor.Serial)
+                                .ToList();
+                        }
+                    });
+                    string serialInfo = string.Empty;
+
+                    if (query.Count == 0)
+                    {
+                        labelFindSerial.Text = "Поиск завершен.\nСерийные номера не найдены.";
+                        buttonPrint.Enabled = false;
+                    }
+                    else
+                    {
+                        
+                        labelFindSerial.Text = "Поиск завершен.\nСерийные номера найдены.";
+                        buttonPrint.Enabled = true;
+                        
+//----------------------------потом убрать-------------------------------------------//
+                        // Получаем список строк, представляющих значения из списка query
+                        List<string> serial_list_str = query.Select(serial => serial.ToString()).ToList();
+                        // Преобразуем список строк в одну строку, разделенную запятыми
+                        serials_str = string.Join(", ", serial_list_str);
+                    }
+                    // Записываем результат в файл
+                    File.WriteAllText(fileSensorSerial, serials_str);
+                }
             }
             catch (ArgumentException ex)
             {
                 labelError.Text = ex.Message;
+                labelFindSerial.Text = string.Empty;
             }
+            buttonFind.Enabled = true;
         }
 
-        //поиск введенных номеров изделий
-        public int[,] FindSelectionIndex(int[] SerialNumbers)
-        {
-            int countAvailableSerial = 0;
-
-            //преобразовать одномерный массив в двумерный массив
-            int countIndex = SerialNumbers.Length;
-            int[,] DBSerialFlag = new int[3, countIndex];
-            for (int i = 0; i < 3; i++)
-            {
-                for (int j = 0; j < countIndex; j++)
-                {
-                    if (i == 0)
-                    {
-                        DBSerialFlag[i, j] = SerialNumbers[j];
-                    }
-                    else DBSerialFlag[i, j] = 0;
-                }
-            }
-
-            //поиск номеров по базе флаг присутствия в базе
-            using (var dbContext = new VpDevaContext())
-            {
-                //запрос к serials на совпадение с данными массива
-                var serial_cid = dbContext.Sensors.Select(sensor => new { sensor.Serial, sensor.Cid }).ToList();
-                /*
-                var query = dbContext.Sensors
-                .Where(sensor => serialNumbers.Contains(sensor.Serial))
-                .Select(sensor => new { sensor.Serial, sensor.Cid })
-                .ToList();*/
-
-                // Чтение номеров изделий из базы данных и проставление флагов наличия в массиве DBSerial
-                foreach (var serial in serial_cid)
-                {
-                    for (int i = 0; i < DBSerialFlag.GetLength(1); i++)
-                    {
-                        if (serial.Serial == DBSerialFlag[0, i])
-                        {
-                            DBSerialFlag[1, i] = 1; // Проставление флага наличия
-                            DBSerialFlag[2, i] = ((int)serial.Cid);
-                            countAvailableSerial++;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            //инициализация глобальной переменной
-            SerialCidDB = new int[2, countAvailableSerial];
-
-            return DBSerialFlag;
-        }
 
         // поиск номеров по базе
         // совпадение - флаг совпадения, не нашло - флаг
@@ -203,89 +197,60 @@ namespace Server_App_3._3
             return SerialNumbers.ToArray();
         }
 
-        //вывод информции о номерах, хранящихся в базе
-        public string MessageSerialInfo(int[,] DBSerial_flags, ref bool IsErrorDBSerial)
-        {
-            string serialInfo = string.Empty;
-            string availableSerial = "Доступные изделия:";
-            string unavailableSerial = "Недоступные изделия:";
-            int count_available_serial = 0;
-            //отсутствие доступных изделий
-            //вывод отсортированной таблицей доступные/недоступные номера с прокруткой
-            for (int i = 0; i < DBSerial_flags.GetLength(1); i++)
-            {
-                if (DBSerial_flags[1, i] == 1)
-                {
-                    availableSerial += DBSerial_flags[0, i].ToString() + ", ";
-
-                    SerialCidDB[0, count_available_serial] = DBSerial_flags[0, i]; //запись serial в глобальную переменную
-                    SerialCidDB[1, count_available_serial] = DBSerial_flags[2, i]; //запись cid в глобальную переменную
-                    count_available_serial++;
-                }
-            }
-            if (availableSerial != "Доступные изделия:") buttonPrint.Enabled = true;
-            else buttonPrint.Enabled = false;
-
-            return availableSerial;
-        }
         private void buttonPrint_Click(object sender, EventArgs e)
         {
             labelInfoDB.Text = string.Empty;
             //данные из таблиц храним в структуре
             //сформировать скрипт
-            DBShemaJSON db_shema_json = ScriptJSON();
-            InsertUserDB(db_shema_json);
+            ScriptInsert();
+            InsertUserDB();
+            labelInfoDB.Text = "Сбор данных завершен!";
             //при вставке смотрим существуют ли данные с таким заводским номером и датой и исходя из этого пропускаем/вставляем данные
             //проверка версии базы данных
         }
-        public DBShemaJSON ScriptJSON()
+        public DBShemaInsert ScriptInsert()
         {
-            DBShemaJSON db_shema_json;
             labelInfoDB.Text = "Выполняется сбор данных...";
-
-            var serials = new List<long>();
-            var sensor_cid = new List<long?>();
-
+            Application.DoEvents(); // Обновление интерфейса
             using (var dbContext = new VpDevaContext())
             {
-                // Получаем список значений serial из массива Serial_Cid_DB
-                for (int j = 0; j < SerialCidDB.Length / 2; j++)
-                {
-                    serials.Add(SerialCidDB[0, j]);
-                    sensor_cid.Add(SerialCidDB[1, j]);
-                }
+                //запрос запрос в базу нужные cid
+                db_insert.sensor_cid = dbContext.Sensors
+                .Where(sensor => db_insert.serialList.Contains((int)sensor.Serial))
+                .Select(sensor => sensor.Cid)
+                .ToList();
 
                 // Записываем JSON-строку таблицы Sensor в файл и переменную
-                db_shema_json.sensor = SerialJSON(serials); //json sensor
+                db_insert.sensor = SerialScript(); //json sensor
                 //Сбор данных по teds_data.sensor_oid == sensor.cid в таблице teds_data
-                db_shema_json.teds_data = TedsJSON(sensor_cid); //json teds
+                db_insert.teds_data = TedsScript(); //json teds
 
-                // Записываем JSON-строку таблиц, связанных с teds_data в структуру db_shema_json
+                // Записываем данные таблиц, связанных с teds_data в структуру db_shema_json
                 //Для выбранных teds_data.sensor_oid сбор данных по
                 //type_cal_oid в соответствии с sensor_oid из таблицы type_call
                 //teds_template_oid в соответствии с sensor_oid из таблицы teds_template
                 //author_oid в соответствии с sensor_oid из таблицы author
                 //manufacturer_oid в соответствии с sensor_oid из таблицы manufacturer
                 //default_teds_parametrs_oid в соответствии с sensor_oid из таблицы default_teds_parametrs
-                db_shema_json.default_teds_parametrs = DefaultTedsParametrsJSON(sensor_cid);
-                db_shema_json.teds_employee = TedsEmployeeJSON(sensor_cid);
-                db_shema_json.teds_template = TedsTemplateJSON(sensor_cid);
-                db_shema_json.type_cal = TypeCalJSON(sensor_cid);
-                db_shema_json.organization = OrganizationJSON(sensor_cid);
+                db_insert.default_teds_parametrs = DefaultTedsParametrsScript();
+                db_insert.teds_employee = TedsEmployeeScript();
+                db_insert.teds_template = TedsTemplateScript();
+                db_insert.type_cal = TypeCalScript();
+                db_insert.organization = OrganizationScript();
             }
-            return db_shema_json;
+            return db_insert;
         }
-        public List<TedsDatum> TedsData(List<long?> sensor_oid)
+        public List<TedsDatum> TedsData()
         {
             using (var dbContext = new VpDevaContext())
             {
                 var teds_data = dbContext.TedsData
-                .Where(teds => sensor_oid.Contains(teds.SensorOid))
+                .Where(teds => db_insert.sensor_cid.Contains((long)teds.SensorOid))
                 .ToList();
                 return teds_data;
             }
         }
-        public string SerialJSON(List<long> serials)
+        public string SerialScript()
         {
             string tableName = "Sensor";
 
@@ -293,7 +258,7 @@ namespace Server_App_3._3
             {
                 // Выполняем выборку данных из таблицы Sensors на основе значений serial
                 var sensor_data = dbContext.Sensors
-                    .Where(sensor => serials.Contains(sensor.Serial))
+                    .Where(sensor => db_insert.serialList.Contains((int)sensor.Serial))
                     .Select(sensor => new
                     {
                         sensor.Cid,
@@ -304,26 +269,41 @@ namespace Server_App_3._3
                     })
                     .ToList();
 
-                // Сериализуем данные в JSON
-                string json_serial = JsonConvert.SerializeObject(sensor_data, Formatting.Indented);
+                StringBuilder serial_script = new StringBuilder();
 
+                // Добавляем строку с заголовками столбцов
+                serial_script.AppendLine($"INSERT INTO vibropribor.sensor (cid, uuid, serial, variant_sensor_oid, author_oid) VALUES");
+
+                // Добавляем строки вставки данных для каждого элемента в sensor_data
+                foreach (var data in sensor_data)
+                {
+                    serial_script.AppendLine($"({data.Cid}, '{data.Uuid}', {data.Serial}, {data.VariantSensorOid}, {data.AuthorOid}),");
+                }
+
+                // Удаляем последнюю запятую в последней строке вставки данных
+                serial_script.Length -= 3;
+                serial_script.AppendLine(";");
+                string script_insert_serial = serial_script.ToString();
+
+                // Сериализуем данные в JSON
+                //string json_serial = JsonConvert.SerializeObject(sensor_data, Formatting.Indented);
                 // Создаем строку для хранения скрипта вставки данных в формате JSON
-                string insertScriptSeral = $"INSERT INTO {tableName} (column_name) VALUES ('{json_serial}')";
+                //string insertScriptSeral = $"INSERT INTO {tableName} (column_name) VALUES ('{json_serial}')";
 
                 // Записываем JSON-строку в файл
-                //File.WriteAllText(filePathInsertSensor, insertScriptSeral);
-                return json_serial;
+                File.WriteAllText("C:\\Users\\aakhrapicheva\\source\\repos\\Server_App_3.3\\FindResult\\script_insert_serial.txt", script_insert_serial);
+                return script_insert_serial;
             }
         }
-        public string TedsJSON(List<long?> sensor_cid)
+        public string TedsScript()
         {
             //string tableName = "teds_data";
-
+            string filePathInsertSensor = "C:\\Users\\aakhrapicheva\\source\\repos\\Server_App_3.3\\Json\\script_insert_teds_data.sql";
             using (var dbContext = new VpDevaContext())
             {
                 // Выполняем выборку данных из таблицы teds_data на основе значений serial
                 var teds_data = dbContext.TedsData
-                .Where(teds => sensor_cid.Contains(teds.SensorOid))
+                .Where(teds => db_insert.sensor_cid.Contains((long)teds.SensorOid))
                 .Select(teds => new
                 {
                     teds.Cid,
@@ -339,21 +319,34 @@ namespace Server_App_3._3
                 })
                 .ToList();
 
-                // Сериализуем данные в JSON
-                var json_teds_data = JsonConvert.SerializeObject(teds_data, Formatting.Indented);
+                StringBuilder teds_datainsert_script = new StringBuilder();
 
-                // Создаем строку для хранения скрипта вставки данных в формате JSON
-                //string insertScriptTedsData = $"INSERT INTO {tableName} (column_name) VALUES ('{json_teds_data}')";
-                //File.WriteAllText(filePathInsertSensor, insertScriptTedsData);
-                return json_teds_data;
+                // Добавляем строку с заголовками столбцов
+                teds_datainsert_script.AppendLine($"INSERT INTO teds_data (cid, date, type_cal_oid, teds_template_oid, sensor_oid, author_oid, teds_data, manufacturer_oid, default_teds_parametrs_oid) VALUES");
+
+                // Добавляем строки вставки данных для каждого элемента в teds_data
+                foreach (var data in teds_data)
+                {
+                    teds_datainsert_script.AppendLine($"({data.Cid}, '{data.Date}', {data.TypeCalOid}, {data.TedsTemplateOid}, {data.SensorOid}, {data.AuthorOid}, '{data.TedsData}', {data.ManufacturerOid}, {data.DefaultTedsParametrsOid}),");
+                }
+
+                // Удаляем последнюю запятую в последней строке вставки данных
+                teds_datainsert_script.Length -= 3;
+                // Добавляем символ ";" в конец строки
+                teds_datainsert_script.AppendLine(";");
+
+                string script_insert_teds_data = teds_datainsert_script.ToString();
+
+                File.WriteAllText(filePathInsertSensor, script_insert_teds_data);
+                return script_insert_teds_data;
             }
         }
-        public string DefaultTedsParametrsJSON(List<long?> sensor_oid)
+        public string DefaultTedsParametrsScript()
         {
             using (var dbContext = new VpDevaContext())
             {
                 // Выполняем выборку строк из таблицы teds_data, где sensor_oid совпадает со значениями из списка
-                var teds_data = TedsData(sensor_oid);
+                var teds_data = TedsData();
 
                 // Получаем список связанных идентификаторов из таблицы default_teds_parametrs
                 var default_teds_parametrs = dbContext.DefaultTedsParametrs
@@ -367,19 +360,38 @@ namespace Server_App_3._3
                 })
                 .ToList();
 
-                var json_default_teds_parametrs = JsonConvert.SerializeObject(default_teds_parametrs, Formatting.Indented);
+                StringBuilder default_teds_parametrs_script = new StringBuilder();
 
-                return json_default_teds_parametrs;
+                // Добавляем строку с заголовками столбцов
+                default_teds_parametrs_script.AppendLine($"INSERT INTO vpref.default_teds_parametrs (cid, teds_parametrs, sensor_type, uuid) VALUES");
+
+                // Добавляем строки вставки данных для каждого элемента в default_teds_parametrs
+                foreach (var data in default_teds_parametrs)
+                {
+                    default_teds_parametrs_script.AppendLine($"({data.Cid}, '{data.TedsParametrs}', '{data.SensorType}', '{data.Uuid}'),");
+                }
+
+                // Удаляем последнюю запятую в последней строке вставки данных
+                default_teds_parametrs_script.Length -= 3;
+
+                // Добавляем символ ";" в конец строки
+                default_teds_parametrs_script.AppendLine(";");
+
+                string script_insert_default_teds_parametrs = default_teds_parametrs_script.ToString();
+
+                //var json_default_teds_parametrs = JsonConvert.SerializeObject(default_teds_parametrs, Formatting.Indented);
+
+                return script_insert_default_teds_parametrs;
             }
         }
-        public string TedsEmployeeJSON(List<long?> sensor_oid)
+        public string TedsEmployeeScript()
         {
             using (var dbContext = new VpDevaContext())
             {
                 // Выполняем выборку строк из таблицы teds_data, где sensor_oid совпадает со значениями из списка
-                var teds_data = TedsData(sensor_oid);
+                var teds_data = TedsData();
 
-                // Получаем список связанных идентификаторов из таблицы teds_employee
+                // Получаем список связанных идентификаторов из таблицы teds.teds_employee
                 var teds_employee = dbContext.TedsEmployees
                 .Where(employee => teds_data.Select(t => t.AuthorOid).Contains(employee.Cid))
                 .Select(employee => new
@@ -391,19 +403,38 @@ namespace Server_App_3._3
                     employee.ViewTeds,
                 })
                 .ToList();
+                StringBuilder teds_employee_script = new StringBuilder();
 
-                var json_teds_employee = JsonConvert.SerializeObject(teds_employee, Formatting.Indented);
+                // Добавляем строку с заголовками столбцов
+                teds_employee_script.AppendLine($"INSERT INTO teds.teds_employee (teds_employee_script, teds_employee_script, teds_employee_script, teds_employee_script, teds_employee_script) VALUES");
 
-                return json_teds_employee;
+                // Добавляем строки вставки данных для каждого элемента в teds_employee
+                foreach (var data in teds_employee)
+                {
+                    teds_employee_script.AppendLine($"({data.Cid}, '{data.Uuid}', '{data.EmployeeOid}', '{data.PermissionOid}', '{data.ViewTeds}'),");
+                }
+
+                // Удаляем последнюю запятую в последней строке вставки данных
+                teds_employee_script.Length -= 3;
+
+                // Добавляем символ ";" в конец строки
+                teds_employee_script.AppendLine(";");
+
+                string script_insert_teds_employee = teds_employee_script.ToString();
+
+
+                //var json_teds_employee = JsonConvert.SerializeObject(teds_employee, Formatting.Indented);
+
+                return script_insert_teds_employee;
             }
 
         }
-        public string TedsTemplateJSON(List<long?> sensor_oid)
+        public string TedsTemplateScript()
         {
             using (var dbContext = new VpDevaContext())
             {
                 // Выполняем выборку строк из таблицы teds_data, где sensor_oid совпадает со значениями из списка
-                var teds_data = TedsData(sensor_oid);
+                var teds_data = TedsData();
 
                 // Получаем список связанных идентификаторов из таблицы teds_employee
                 var teds_template = dbContext.TedsTemplates
@@ -418,19 +449,37 @@ namespace Server_App_3._3
                 })
                 .ToList();
 
-                var json_teds_template = JsonConvert.SerializeObject(teds_template, Formatting.Indented);
+                StringBuilder teds_template_script = new StringBuilder();
 
-                return json_teds_template;
+                // Добавляем строку с заголовками столбцов
+                teds_template_script.AppendLine($"INSERT INTO teds.teds_template (cid, id_template, id_template, description, teds_parametrs) VALUES");
+
+                // Добавляем строки вставки данных для каждого элемента в teds.teds_template
+                foreach (var data in teds_template)
+                {
+                    teds_template_script.AppendLine($"({data.Cid}, '{data.IdTemplate}', '{data.NameTemplate}', '{data.Description}', '{data.TedsParametrs}'),");
+                }
+
+                // Удаляем последнюю запятую в последней строке вставки данных
+                teds_template_script.Length -= 3;
+
+                // Добавляем символ ";" в конец строки
+                teds_template_script.AppendLine(";");
+
+                string script_insert_teds_template = teds_template_script.ToString();
+                //var json_teds_template = JsonConvert.SerializeObject(teds_template, Formatting.Indented);
+
+                return script_insert_teds_template;
             }
         }
-        public string TypeCalJSON(List<long?> sensor_oid)
+        public string TypeCalScript()
         {
             using (var dbContext = new VpDevaContext())
             {
                 // Выполняем выборку строк из таблицы teds_data, где sensor_oid совпадает со значениями из списка
-                var teds_data = TedsData(sensor_oid);
+                var teds_data = TedsData();
 
-                // Получаем список связанных идентификаторов из таблицы teds_employee
+                // Получаем список связанных идентификаторов из таблицы vpref.type_cal
                 var type_cal = dbContext.TypeCals
                 .Where(c => teds_data.Select(t => t.TypeCalOid).Contains(c.Cid))
                 .Select(c => new
@@ -443,19 +492,37 @@ namespace Server_App_3._3
                 })
                 .ToList();
 
-                var json_type_cal = JsonConvert.SerializeObject(type_cal, Formatting.Indented);
+                StringBuilder type_cal_script = new StringBuilder();
 
-                return json_type_cal;
+                // Добавляем строку с заголовками столбцов
+                type_cal_script.AppendLine($"INSERT INTO vpref.type_cal (cid, uuid, display_name, description, teds_code) VALUES");
+
+                // Добавляем строки вставки данных для каждого элемента в type_cal
+                foreach (var data in type_cal)
+                {
+                    type_cal_script.AppendLine($"({data.Cid}, '{data.Uuid}', '{data.DisplayName}', '{data.Description}', '{data.TedsCode}'),");
+                }
+
+                // Удаляем последнюю запятую в последней строке вставки данных
+                type_cal_script.Length -= 3;
+
+                // Добавляем символ ";" в конец строки
+                type_cal_script.AppendLine(";");
+
+                string script_insert_type_cal = type_cal_script.ToString();
+                //var json_type_cal = JsonConvert.SerializeObject(type_cal, Formatting.Indented);
+
+                return script_insert_type_cal;
             }
         }
-        public string OrganizationJSON(List<long?> sensor_oid)
+        public string OrganizationScript()
         {
             using (var dbContext = new VpDevaContext())
             {
                 // Выполняем выборку строк из таблицы teds_data, где sensor_oid совпадает со значениями из списка
-                var teds_data = TedsData(sensor_oid);
+                var teds_data = TedsData();
 
-                // Получаем список связанных идентификаторов из таблицы teds_employee
+                // Получаем список связанных идентификаторов из таблицы vpref.organization
                 var organization = dbContext.Organizations
                 .Where(o => teds_data.Select(t => t.ManufacturerOid).Contains(o.Cid))
                 .Select(o => new
@@ -479,19 +546,84 @@ namespace Server_App_3._3
                 })
                 .ToList();
 
-                var json_organization = JsonConvert.SerializeObject(organization, Formatting.Indented);
 
-                return json_organization;
+                StringBuilder organization_script = new StringBuilder();
+
+                // Добавляем строку с заголовками столбцов
+                organization_script.AppendLine($"INSERT INTO vpref.organization (cid, uuid, name, short_name, legal_address, actual_address, postal_address, inn, kpp, bik, ogrn, okpo, ncage_oid, iu_organization_code_oid, decimal_oid, ieee_1451_manufacturer_oid) VALUES");
+
+                // Добавляем строки вставки данных для каждого элемента в organization
+                foreach (var data in organization)
+                {
+                    organization_script.AppendLine($"({data.Cid}, '{data.Uuid}', '{data.Name}', '{data.ShortName}', '{data.LegalAddress}', '{data.ActualAddress}', '{data.PostalAddress}', '{data.Inn}', '{data.Kpp}', '{data.Bik}', '{data.Ogrn}', '{data.Okpo}', '{data.NcageOid}', '{data.IuOrganizationCodeOid}', '{data.DecimalOid}', '{data.Ieee1451ManufacturerOid}'),");
+                }
+
+                // Удаляем последнюю запятую в последней строке вставки данных
+                organization_script.Length -= 3;
+
+                // Добавляем символ ";" в конец строки
+                organization_script.AppendLine(";");
+
+                string script_insert_organization = organization_script.ToString();
+
+                //var json_organization = JsonConvert.SerializeObject(organization, Formatting.Indented);
+
+                return script_insert_organization;
             }
         }
+
+        public void InsertUserDB()
+        {
+            string connectionString = "Host=localhost;Port=5432;Database=VpEmptyDB;Username=postgres;Password=0000;";
+
+            using (NpgsqlConnection connection = new NpgsqlConnection(connectionString))
+            {
+                connection.Open();
+
+                // Создаем объект команды с указанным скриптом и подключением
+                NpgsqlCommand command = new NpgsqlCommand(db_insert.organization, connection);
+
+                // Выполняем скрипт
+                command.ExecuteNonQuery();
+
+                connection.Close();
+            }
+
+        }
+        /*
         public void InsertUserDB(DBShemaJSON db_shema_json)
         {
             int selectColums = 0;
 
+            using (NpgsqlConnection connection = new NpgsqlConnection("Host=localhost;Username=postgres;Password=0000;Database=VpEmptyDB"))
+            {
+                connection.Open();
 
-            string connectionString = "Host=localhost;Username=postgres;Password=0000;Database=VpEmptyDB";
-            // Десериализация JSON в объект типа TedsDatum
-            List <TedsDatum> teds_data;
+                var tedsData = JsonConvert.DeserializeObject<List<TedsDatum>>(db_shema_json.teds_data);
+
+                // Вставка данных в таблицу базы данных
+                for (int i = 0; i < tedsData.Count; i++)
+                {
+                    TedsDatum? item = tedsData[i];
+                    // Создание новой записи в таблице базы данных и заполнение полей
+                    var newItem = new YourTableEntity
+                    {
+                        Field1 = item.Field1,
+                        Field2 = item.Field2,
+                        // ...
+                    };
+
+                    // Добавление новой записи в контекст базы данных
+                    dbContext.YourTable.Add(newItem);
+                }
+
+                // Сохранение изменений в базе данных
+                dbContext.SaveChanges();
+
+            }
+
+                // Десериализация JSON в объект типа TedsDatum
+                List<TedsDatum> teds_data;
             try
             {
                 teds_data = JsonConvert.DeserializeObject<List<TedsDatum>>(db_shema_json.teds_data);
@@ -525,7 +657,7 @@ namespace Server_App_3._3
                     {
                         selectColums++;
                         // Если данные отсутствуют, выполните их запись в базу данных
-                        /*
+                        
                         // Создайте команду для вставки данных в таблицу
                         string insertCommand = "INSERT INTO your_table (column1, column2) VALUES (@Value1, @Value2)"; // Замените your_table и column1, column2 на соответствующие имена таблицы и столбцов
                         using (NpgsqlCommand insertCommand = new NpgsqlCommand(insertCommand, connection))
@@ -536,12 +668,14 @@ namespace Server_App_3._3
 
                             // Выполните команду вставки данных
                             insertCommand.ExecuteNonQuery();
-                        }*/
+                        }
                     }
                 }
+
+
             }
-            /*
-             //поиск по таблице teds_data базы VpEmptyDB
+            
+            //поиск по таблице teds_data базы VpEmptyDB
             string selectCommand = "SELECT column1, column2 FROM mytable WHERE condition";
 
             // подключение к пользовательской базе данных
@@ -549,7 +683,7 @@ namespace Server_App_3._3
             using (NpgsqlConnection connection = new NpgsqlConnection(connectionString))
             {
                 connection.Open();
-               
+
 
 
                 // Создайте команду для вставки данных в таблицу
@@ -564,7 +698,9 @@ namespace Server_App_3._3
                     // Выполните команду вставки данных
                     command.ExecuteNonQuery();
                 }
-            }*/
+            }
+
         }
+        */
     }
 }
